@@ -1,0 +1,939 @@
+---
+title: "Case Study 2"
+class: "MSDS6306, Tuesday, 630p - Lindsey"
+author: "Justin Ehly"
+date: "12/5/2020"
+presentation: https://www.screencast.com/t/leqSdPsrP
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+----- Executive Summary -----
+
+This is a case study for DDSAnalytics that leverages data science for talent management. Talent management is the iterative process of developing and retaining employees and may include workforce planning, employee development through training and mentoring, increasing employee satisfaction and reducing voluntary employee attrition or churn.
+
+The first part of this analysis focuses on attrition and utilizes a machine algorithm called Boruta to efficiently identify both statistically and highly probable statistically important factors that lead to attrition. After careful testing and modeling, it was determined that the three most influential factors contributing to attrition are overtime, monthly income and stock options.
+
+The second part of this analysis focuses on job role trends. Based on the data, the employees seem to be on average all aobut the same when it comes to environment and job satisfaction, job involvement and work life balance with scores ranging from 2.5-3.0 on a 4 point scale. Sales Reps tend to be the youngest and have the lowest average scores in terms of satisfaction while managers tend to be the oldest and most satisfied with their jobs. Overall the company is very generous with annual pay raises with an overall average of 15.2%! 
+
+Finally, we looked at estimating monthly salaries and determined the most influential factors are total working years, education level, job level and job role.
+
+The video presentation can be viewed here: https://www.screencast.com/t/leqSdPsrP
+-Justin Ehly
+
+
+```{r}
+
+```
+
+Online Research to help with variable selection 
+Based on some SME online research, let's start with 
+ 1. Poor Training - According to go2HR.com, 40% of employees who receive poor job training leave their positions within the first year.
+ 2. Poor Management increases turnover - survey conducted by FurstPerson illustrates as much, highlighting a correlation between a director’s tenure and employee attrition.
+ 3. Lack of Growth Opportunities
+ 4. Inaccurate Job descriptions during hiring process (leads to disappointed employees)
+ Resource: https://www.furstperson.com/blog/causes-employee-attrition-cost-employee-attrition
+
+ Another study shows
+ 1. management
+ 2. Alignment & Involvement
+ 3. Employee Enablement
+ 4. Collaboration & Teamwork
+ 5. Feedback & Recognition
+ 6. Investment in People
+ 7. Comp & Benefits
+ 8. Company Confidence
+ 9. Social Connection
+ 10. Company Performance
+ Resource: https://blog.betterworks.com/people-analytics-reveals-top-reasons-for-attrition-and-it-isnt-compensation/
+
+
+```{r}
+##### Libraries #####
+library(readr)
+library(tibble)
+library(ggplot2)
+library(GGally)
+library(magrittr)
+library(plotly)
+library(utils)
+library(stats)
+library(e1071)
+library(tidyverse)
+library(caret)
+library(klaR)
+library(mlbench)
+library(rstatix)
+library(fmsb)
+library(class)
+library(stringr)
+library(Boruta)
+library(dplyr)
+
+```
+
+```{r}
+#####################################
+##                                 ##
+########### Grab the Data ###########
+##                                 ##
+#####################################
+dds <- read.csv("CaseStudy2-data.csv")
+#view(names(dds))
+
+##### Look for any NAs in the data set ####
+sapply(dds, function(x) sum(is.na(x)))
+# Confirmed no NA's in the data
+summary(dds)
+
+# Get a list of all variable names and unique values
+dds_info <- capture.output(str(dds))
+#view(dds_info)
+write(dds_info, "dds_info.csv")
+```
+
+
+```{r}
+#########################################################
+#                                                       #
+################# Categorical Variables #################
+#                                                       #
+#########################################################
+
+# Let's separate the categorical from the numeric variables and get rid of unnecessary variables
+# I used excel for this part
+# Categorical Variables
+ddsDF_cat <- dds[,c(3,4,6,8,9,12,13,15:19,24,26,27,29,31,32)]
+str(ddsDF_cat)
+# let's turn all the variables into factors
+ddsDF_cat <- ddsDF_cat %>% dplyr::mutate_if(is.character, as.factor)
+ddsDF_cat <- ddsDF_cat %>% dplyr::mutate_if(is.integer, as.factor)
+
+ddsDF_cat$JobRole <- case_when(
+  ddsDF_cat$JobRole == "Healthcare Representative" ~ "Healthcare Rep",
+  ddsDF_cat$JobRole == "Human Resources" ~ "HR",
+  ddsDF_cat$JobRole == "Laboratory Technician" ~ "Lab Tech",
+  ddsDF_cat$JobRole == "Manufacturing Director" ~ "Manufact Director",
+  ddsDF_cat$JobRole == "Research Director" ~ "Res. Director",
+  ddsDF_cat$JobRole == "Research Scientist" ~ "Res. Scientist",
+  ddsDF_cat$JobRole == "Sales Executive" ~ "Sales Exec",
+  ddsDF_cat$JobRole == "Sales Representative" ~ "Sales Rep",
+  ddsDF_cat$JobRole == "Manager" ~ "Manager")
+
+str(ddsDF_cat)
+
+```
+
+
+
+```{r}
+###############################################
+#                                             #
+############# Numeric Variables ###############
+#                                             #
+###############################################
+
+# numeric variables
+ddsDF_num <- dds[,c(3,2,5,7,14,20,21,22,25,30,33:36)]
+str(ddsDF_num)
+ddsDF_num[,c(2:14)] <- sapply(ddsDF_num[,c(2:14)], as.numeric)
+ddsDF_num$Attrition <- as.factor(ddsDF_num$Attrition)
+str(ddsDF_num)
+
+```
+
+
+```{r}
+########################
+##                    ##
+###    Start EDA     ###
+##                    ##
+########################
+
+################# Boruta for Attrition ##############
+# Note about Boruta: Boruta is an all relevant feature selection wrapper algorithm, capable of working with any classification method that output variable importance measure (VIM); by default, Boruta uses Random Forest. The method performs a top-down search for relevant features by comparing original attributes' importance with importance achievable at random, estimated using their permuted copies, and progressively eliminating irrelevant features to stabilise that test.
+
+ddsBinded <- cbind(ddsDF_cat, ddsDF_num)
+str(ddsBinded)
+names(ddsBinded)
+ddsBinded <- ddsBinded[,-19]
+
+boruta_output <- Boruta(Attrition~., data=ddsBinded, doTrace=2) # Boruta search
+
+boruta_signif <- names(boruta_output$finalDecision[boruta_output$finalDecision %in% c("Confirmed", "Tentative")]) #collect Confirmed and Tentative variables
+
+#view(boruta_signif) #view sig var
+# Results
+# 1. Department
+# 2. EnvironmentSatisfaction
+# 3. JobInvolvement
+# 4. JobLevel
+# 5. JobRole
+# 6. JobSatisfaction
+# 7. MaritalStatus
+# 8. OverTime
+# 9. StockOptionLevel
+# 10. WorkLifeBalance
+# 11. Age
+# 12 MonthlyIncome
+# 13 NumCompaniesWorked
+# 14 TotalWorkingYears
+# 15 YearsAtCompany
+# 16 YearsInCurrentRole
+# 17 YearsSinceLastPromotion
+# 18 YearsWithCurrManager
+
+plot(boruta_output, cex.axis=.7, las=2, xlab="", 
+     main="Variable Importance to Attrition (Boruta Method)") #plot results
+
+# Top 3
+# 1. Overtime
+# 2. MonthlyIncome
+# 3. StockOptionLevel
+
+####### Additional EDA Based on Boruta Results and Personal Interest #####
+
+fritos <- ddsBinded[,c("Attrition",
+                       "Department",
+                       "EnvironmentSatisfaction",
+                       "JobInvolvement",
+                       "JobLevel",
+                       "JobRole",
+                       "JobSatisfaction",
+                       "MaritalStatus",
+                       "OverTime",
+                       "StockOptionLevel",
+                       "WorkLifeBalance",
+                       "Age",
+                       "MonthlyIncome",
+                       "NumCompaniesWorked",
+                       "TotalWorkingYears",
+                       "YearsAtCompany",
+                       "YearsInCurrentRole",
+                       "YearsSinceLastPromotion",
+                       "YearsWithCurrManager")]
+str(fritos)
+# Let's see how these 18 factors stack up together for significance
+glmTest <- glm(Attrition~., data=fritos, family = binomial)
+summary(glmTest)
+car::vif(glmTest)
+plot(glmTest, which=4) # Cook's d plot
+plot(glmTest, which=2) # Normal Q-Q Plot
+
+############################################################
+```
+```{r}
+############################################################
+##                                                        ##
+##              T-test and Chi-Sq Tests                   ##
+##                                                        ##
+############################################################
+
+# t-Test Independent Numerical Variables vs Attrition
+age <- t.test(ddsBinded$Age~ddsBinded$Attrition)
+dayrate <- t.test(ddsBinded$DailyRate~ddsBinded$Attrition)
+disthom <- t.test(ddsBinded$DistanceFromHome~ddsBinded$Attrition)
+hrrt <- t.test(ddsBinded$HourlyRate~ddsBinded$Attrition)
+moninc <- t.test(ddsBinded$MonthlyIncome~ddsBinded$Attrition)
+numcowrk <- t.test(ddsBinded$NumCompaniesWorked~ddsBinded$Attrition)
+percSal <- t.test(ddsBinded$PercentSalaryHike~ddsBinded$Attrition)
+totwork <- t.test(ddsBinded$TotalWorkingYears~ddsBinded$Attrition)
+yrsco <- t.test(ddsBinded$YearsAtCompany~ddsBinded$Attrition)
+yrsinrole <- t.test(ddsBinded$YearsInCurrentRole~ddsBinded$Attrition)
+
+tTestdf <- data.frame(Attrition = c("Age", "DayRate", "DistanceFromHome", "HourlyRate", "MonthlyIncome", "NumCompaniesWorked","PercentSalaryHike", "TotalWorkingYears", "YearsAtCompany","YearsInCurrentRole"),
+                      statistic = c(age$statistic,dayrate$statistic,disthom$statistic,hrrt$statistic,moninc$statistic,
+                           numcowrk$statistic,percSal$statistic,totwork$statistic,yrsco$statistic,yrsinrole$statistic),
+                      parameter = c(age$parameter,dayrate$parameter,disthom$parameter,hrrt$parameter,moninc$parameter,
+                           numcowrk$parameter,percSal$parameter,totwork$parameter,yrsco$parameter,yrsinrole$parameter),
+                      pvalue = c(age$p.value,dayrate$p.value,disthom$p.value,hrrt$p.value,moninc$p.value,
+                      numcowrk$p.value,percSal$p.value,totwork$p.value,yrsco$p.value,yrsinrole$p.value))
+
+
+# Test Multiple variables against Attrition
+features1 <- ddsBinded %>% select_if(is.numeric) %>%
+  pivot_longer(., cols=c(2:13), names_to = "variable", values_to="value") #Combine Numeric Variables into a stack
+features1 <- cbind(ddsBinded$Attrition, features1) # add Attrition into the dataframe
+names(features1)[1] <- "Attrition" #correct column name
+str(features1)
+
+stat.test <- features1 %>% group_by(variable) %>%
+  t_test(value~Attrition) %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance()
+
+
+# Chi-Square Tests for categorical variables vs Attrition
+bt <- chisq.test(table(ddsBinded$Attrition, ddsBinded$BusinessTravel))
+dep <- chisq.test(table(ddsBinded$Attrition,ddsBinded$Department))
+edu <- chisq.test(table(ddsBinded$Attrition,ddsBinded$Education))
+edufie <- chisq.test(table(ddsBinded$Attrition,ddsBinded$EducationField))
+envsat <- chisq.test(table(ddsBinded$Attrition,ddsBinded$EnvironmentSatisfaction))
+gender <- chisq.test(table(ddsBinded$Attrition,ddsBinded$Gender))
+jobinv <- chisq.test(table(ddsBinded$Attrition,ddsBinded$JobInvolvement))
+joblev <- chisq.test(table(ddsBinded$Attrition,ddsBinded$JobLevel))
+jobro <- chisq.test(table(ddsBinded$Attrition,ddsBinded$JobRole))
+jobsat <- chisq.test(table(ddsBinded$Attrition,ddsBinded$JobSatisfaction))
+marstat <- chisq.test(table(ddsBinded$Attrition,ddsBinded$MaritalStatus))
+OvrT <- chisq.test(table(ddsBinded$Attrition,ddsBinded$OverTime))
+perrat <- chisq.test(table(ddsBinded$Attrition,ddsBinded$PerformanceRating))
+relsat <- chisq.test(table(ddsBinded$Attrition,ddsBinded$RelationshipSatisfaction))
+stoop <- chisq.test(table(ddsBinded$Attrition,ddsBinded$StockOptionLevel))
+ttly <- chisq.test(table(ddsBinded$Attrition,ddsBinded$TrainingTimesLastYear))
+wlb <- chisq.test(table(ddsBinded$Attrition,ddsBinded$WorkLifeBalance))
+dailyrate <- chisq.test(table(ddsBinded$Attrition,ddsBinded$DailyRate))
+moninc <- chisq.test(table(ddsBinded$Attrition, ddsBinded$MonthlyIncome))
+
+namesDF <- names(ddsDF_cat)
+namesDF <- namesDF[-1]
+namesDF
+# dataframe of ChiSquared Pvalues
+ChiDF <- data.frame(pvalue = c(bt$p.value, dep$p.value, edu$p.value, edufie$p.value, envsat$p.value, gender$p.value,
+                               jobinv$p.value, joblev$p.value, jobro$p.value, jobsat$p.value, marstat$p.value, 
+                               OvrT$p.value, perrat$p.value, relsat$p.value, stoop$p.value, ttly$p.value, wlb$p.value),
+                    parameter = c(bt$parameter, dep$parameter, edu$parameter, edufie$parameter, envsat$parameter,
+                                  gender$parameter, jobinv$parameter, joblev$parameter, jobro$parameter, jobsat$parameter,
+                                  marstat$parameter, OvrT$parameter, perrat$parameter, relsat$parameter, stoop$parameter,
+                                  ttly$parameter, wlb$parameter),
+                    statistic = c(bt$statistic, dep$statistic, edu$statistic, edufie$statistic, envsat$statistic,
+                    gender$statistic, jobinv$statistic, joblev$statistic, jobro$statistic, jobsat$statistic,
+                    marstat$statistic, OvrT$statistic, perrat$statistic, relsat$statistic, stoop$statistic, ttly$statistic,
+                    wlb$statistic),
+                    vsAttrition = namesDF)
+ChiDF <- ChiDF[,c(4,3,2,1)]
+
+ChiDF$pvalue <- as.numeric(ChiDF$pvalue)
+ChiDF$vsAttrition <- as.character(ChiDF$vsAttrition)
+ChiDF
+```
+
+```{r}
+
+#### More EDA  ###
+
+# Percentage of No vs Yes
+Perc_Att <- dds %>% group_by(Attrition) %>% count()
+str(Perc_Att)
+Perc_Att$Percent <- Perc_Att$n/length(dds$Age)
+# 83.9% No Attrition  16.1% Yes Attrition
+
+# Let's look at some summaries overall and then of people that left the company
+ddsSummary <- data.frame(summary(dds))
+ddsSummary <- na.omit(ddsSummary)
+ddsSummary <- ddsSummary %>% separate(Freq, into = c("Variable", "Value"), sep = ":")
+ddsSummary <- ddsSummary[,-1]
+ddsSummary <- ddsSummary %>% unite(Var, Var2, Variable, sep = " ")
+#view(ddsSummary)
+
+# Find summaries of attribution = "yes"
+ddsSumAtt <- dds %>% dplyr::filter(Attrition == "Yes") %>%
+  summary(dds)
+ddsSumAtt <- as.data.frame(ddsSumAtt)
+ddsSumAtt <- na.omit(ddsSumAtt)
+ddsSumAtt <- ddsSumAtt %>% separate(Freq, into = c("Variable", "Value"), sep = ":")
+ddsSumAtt <- ddsSumAtt[,-1]
+ddsSumAtt <- ddsSumAtt %>% unite(Var, Var2, Variable, sep = " ")
+
+
+# Find summaries of attribution = "no"
+ddsSumAttNo <- dds %>% dplyr::filter(Attrition == "No") %>%
+  summary(dds)
+ddsSumAttNo <- as.data.frame(ddsSumAttNo)
+ddsSumAttNo <- na.omit(ddsSumAttNo)
+ddsSumAttNo <- ddsSumAttNo %>% separate(Freq, into = c("Variable", "Value"), sep = ":")
+ddsSumAttNo <- ddsSumAttNo[,-1]
+ddsSumAttNo <- ddsSumAttNo %>% unite(Var, Var2, Variable, sep = " ")
+
+
+# Create one master Yes vs No for numeric values for comparison
+ddsSumMerge <- merge(ddsSumAtt, ddsSumAttNo, by = "Var")
+ddsSumMerge <- rename(ddsSumMerge, "Att=Yes"="Value.x", "Att=No" =  "Value.y")
+
+ddsSumMerge <- ddsSumMerge[-c(1:6, 13:42, 49:54, 61:81, 88:90, 97:111,
+                              130:132, 163:174),]
+write.csv(ddsSumMerge, "SumMerge.csv")
+
+ddsColMeansYes <- dds %>% dplyr::filter(Attrition == "Yes") %>%
+  dplyr::select(Age, DailyRate, HourlyRate, 
+                                     MonthlyRate, DistanceFromHome,
+                                     EnvironmentSatisfaction,
+                                     JobInvolvement,
+                                     JobSatisfaction,
+                                     MonthlyIncome,
+                                     NumCompaniesWorked,
+                                     PerformanceRating,
+                                     RelationshipSatisfaction,
+                                     TotalWorkingYears,
+                                     TrainingTimesLastYear,
+                                     WorkLifeBalance,
+                                     YearsAtCompany,
+                                     YearsInCurrentRole,
+                                     YearsSinceLastPromotion,
+                                     YearsWithCurrManager) %>%
+  colMeans()
+#view(ddsColMeansYes)
+ddsColMeansYes <- as.data.frame((ddsColMeansYes))
+
+ddsColMeansNo <- dds %>% dplyr::filter(Attrition == "No") %>%
+  dplyr::select(Age, DailyRate, HourlyRate, 
+                                     MonthlyRate, DistanceFromHome,
+                                     EnvironmentSatisfaction,
+                                     JobInvolvement,
+                                     JobSatisfaction,
+                                     MonthlyIncome,
+                                     NumCompaniesWorked,
+                                     PerformanceRating,
+                                     RelationshipSatisfaction,
+                                     TotalWorkingYears,
+                                     TrainingTimesLastYear,
+                                     WorkLifeBalance,
+                                     YearsAtCompany,
+                                     YearsInCurrentRole,
+                                     YearsSinceLastPromotion,
+                                     YearsWithCurrManager) %>%
+  colMeans()
+
+ddsColMeansNo <- as.data.frame((ddsColMeansNo))
+
+ddsColMeans <- cbind(ddsColMeansYes, ddsColMeansNo)
+
+ddsColMeans <- rename(ddsColMeans, "AttYes" = "(ddsColMeansYes)", "AttNo"="(ddsColMeansNo)")
+ddsColMeans$Ratio <- (1 - ddsColMeans$AttYes / ddsColMeans$AttNo )
+ddsColMeans$Diff <- ddsColMeans$AttNo - ddsColMeans$AttYes
+
+ddsRN <- rownames(ddsColMeans)
+ddsColMeans <- cbind(ddsRN, ddsColMeans)
+ddsColMeans <- rename(ddsColMeans, "Attributes" = "ddsRN")
+rownames(ddsColMeans) <- 1:nrow(ddsColMeans)
+
+# Plot to show ratios between mean values of Att=Yes vs Att=No  
+ddsColMeans %>% ggplot(aes(x=Ratio, y=Attributes)) +
+  geom_point() +
+  geom_segment(aes(x=Ratio, xend=0, y=Attributes, yend=Attributes)) +
+  labs(title = "Yes to No Attrition Ratio by Employee Attribute",
+       subtitle = "Positive Means No is X% larger than Yes") +
+  geom_text(aes(label=formattable::percent(Ratio,1)), size = 3, nudge_y = .4) +
+  xlab("Ratio Yes:No") +
+  theme_classic()
+
+# Plot to show differences in mean values of Att=Yes vs Att=No  
+ddsColMeans[-c(2,4,9),] %>%
+  ggplot(aes(x=Diff, y=Attributes)) +
+  geom_point() +
+  geom_segment(aes(x=Diff, xend=0, y=Attributes, yend=Attributes)) +
+  labs(title = "Yes to No Attrition Mean Different by Employee Attribute",
+       subtitle = "Positive Means No is larger than Yes") +
+  geom_text(aes(label=round(Diff, 2)), size = 3, nudge_y = .4) +
+  xlab("Difference = No - Yes") +
+  theme_classic()
+
+# Plot to show differences in mean values of Att=Yes vs Att=No  for Earnings
+ddsColMeans[c(2,4,9),] %>%
+  ggplot(aes(x=Diff, y=Attributes)) +
+  geom_point() +
+  geom_segment(aes(x=Diff, xend=0, y=Attributes, yend=Attributes)) +
+  labs(title = "Yes to No Attrition Mean Differences by Employee Attribute",
+       subtitle = "Positive Means No is larger than Yes") +
+  geom_text(aes(label=scales::dollar(round(Diff, 2))), size = 3, nudge_y = .1) +
+  xlab("Difference = No - Yes") +
+  theme_classic()
+```
+
+```{r}
+##### Review the top 3 Factors that contribute to Attrition #####
+
+############## Overtime #################################
+# Plot Overtime by Percent vs Job Roles
+ddsPlot <- ddsBinded %>% group_by(JobRole, OverTime) %>% #OT by JobRole
+  summarize(count = n()) %>% # count recordc by JobRoles
+  mutate(pct = count/sum(count)) # find percent total
+
+# Overall OT for the company
+OT <- ddsBinded %>% group_by(OverTime) %>%  #OT for whole dataset
+  summarize(count = n()) %>% # count recordc by JobRoles
+  mutate(pct = count/sum(count)) # find percent total
+
+# plot the graph
+ddsPlot %>%
+  ggplot(aes(x=JobRole, y=pct, fill = OverTime)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Overtime by JobRole",
+       y="Percentage of Overtime",
+       x="JobRole") +
+  geom_text(aes(label=scales::percent(pct)), position = position_stack(vjust = .5)) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width=10)) +
+  theme_bw() +
+  theme(axis.text.y=element_blank(),
+           axis.ticks.y=element_blank()) 
+
+OTValueYes <- ddsBinded %>% filter(OverTime == "Yes") %>% 
+  aggregate(MonthlyIncome~JobRole, ., mean)
+OTValueNo <- ddsBinded %>% filter(OverTime == "No") %>% 
+  aggregate(MonthlyIncome~JobRole, ., mean)
+
+aggOTV <- aggregate(MonthlyIncome~OverTime, ddsBinded, mean)
+dff <- aggOTV$MonthlyIncome[1]-aggOTV$MonthlyIncome[2]
+dff
+OTV <- merge(x=OTValueYes, y=OTValueNo, by = "JobRole")
+names(OTV)[2] <- "OT:Yes Monthly Income"
+names(OTV)[3] <- "OT:No Monthly Income"
+OTV
+
+
+####################  Monthly Income ################
+# Look at MonthlyIncome
+# Overall MonthlyIncomes for the company
+Monthly <- ddsBinded %>% group_by() %>%  #OT for whole dataset
+  summarize(count = n()) %>% # count recordc by JobRoles
+  mutate(pct = count/sum(count)) # find percent total
+
+# plot the graph
+means <- aggregate(MonthlyIncome~JobRole, ddsBinded, mean)
+ddsBinded %>%
+  ggplot(aes(x=JobRole,y=MonthlyIncome)) +
+  geom_boxplot(aes(color = JobRole), show.legend = FALSE) +
+  labs(title = "Monthly Incomes by JobRole",
+       y="Monthly Income",
+       x="JobRole") +
+  scale_y_continuous(labels=scales::dollar_format()) +
+  #geom_text(aes(label=scales::percent(pct)), position = position_stack(vjust = .5)) +
+  theme_classic() +
+  stat_summary(fun=mean, color="green", geom="point", 
+               shape=18, size=3,show.legend = FALSE) + 
+  geom_text(data = means, aes(label = scales::dollar(MonthlyIncome)),vjust = -1, size=3, color="darkgreen") +
+  scale_x_discrete(labels = function(x) str_wrap(x, width=10))
+
+############### Explore Stock options ###################
+# Stock Option Levels by Job Role
+Opts <- ddsBinded %>% group_by(JobRole, StockOptionLevel) %>% #Stock option levels by JobRole
+  summarize(count = n()) %>% # count records by JobRoles
+  mutate(pct = count/sum(count)) # find percent total
+
+# Overall Stock Options Levels for the company
+Stocks <- ddsBinded %>% group_by(StockOptionLevel) %>%  #stock options levels for whole dataset
+  summarize(count = n()) %>% # count records by JobRoles
+  mutate(pct = count/sum(count)) # find percent total
+
+# Plot Percentages
+
+Opts %>%
+  ggplot(aes(x=JobRole, y=pct, fill = StockOptionLevel)) +
+  geom_bar(stat = "identity", position = position_stack(reverse = TRUE)) +
+  labs(title = "Stock Option Levels by JobRole",
+       y="Percentage of Stock Option Levels",
+       x="JobRole") +
+  geom_text(aes(label=scales::percent(pct, .1)), position = position_stack(vjust = .5, reverse = TRUE), size = 3) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width=10)) +
+  scale_fill_discrete(guide=guide_legend(reverse = TRUE)) +
+  theme_bw() +
+  theme(axis.text.y=element_blank(),
+           axis.ticks.y=element_blank()) 
+```
+
+```{r}
+#########  Job Specific Trends  ############
+
+bbq <- ddsBinded
+positions <- c(6,9,11,12,16,17,18)
+bbq[,c(positions)] <- sapply(bbq[,c(positions)],as.numeric)
+bbqPlot <- cbind(bbq$JobRole, bbq[,c(positions)])
+names(bbqPlot)[1] <- "JobRole"
+test = colMeans(bbqPlot[,c(2:8)])
+
+
+# Plot each variable by JobRole
+bbqPlot %>% pivot_longer(., cols=c(2:8), names_to = "variable", values_to="value") %>% #combines variables into one large variable
+  ggplot(aes(x=JobRole, y=value, fill=variable)) +
+  geom_bar(stat = "identity", position = "dodge", show.legend = TRUE) +
+  theme_bw() +
+  scale_x_discrete(labels = function(x) str_wrap(x, width=10)) +
+  coord_flip()
+
+# Plot each JobRole by Variable
+bbqPlot %>% pivot_longer(., cols=c(2:8), names_to = "variable", values_to="value") %>% #combines variables into one large variable
+  ggplot(aes(x=variable, y=value, fill=JobRole)) +
+  geom_bar(stat = "identity", position = "dodge", show.legend = TRUE) +
+  theme_bw() +
+  scale_x_discrete(labels = function(x) str_wrap(x, width=10)) +
+  coord_flip() +
+  labs(title = "Average Category Ratings by Job Role",
+       y = "Job Roles",
+       x = "Average of Ratings for Each Category")
+
+### Plot the rest of the variables
+
+bbqPlot2 <- bbq[,c(10, 21, 25:31)]
+bbqPlot2 <- aggregate(.~JobRole, data=bbqPlot2, mean) #get colMeans for each variable by JobRole
+
+
+# Plot each JobRole by Variable (age and monthly income should be run alone)
+bbqPlot2 %>% pivot_longer(., cols=c(2:8), names_to = "variable", values_to="value") %>% #combines variables into one large variable
+  ggplot(aes(x=variable, y=value, fill=JobRole)) +
+  geom_bar(stat = "identity", position = "dodge", show.legend = TRUE) +
+  theme_bw() +
+  scale_x_discrete(labels = function(x) str_wrap(x, width=10)) +
+  coord_flip() +
+  labs(title = "Average Category Values by Job Role",
+       y = "Job Roles",
+       x = "Average of Value for Each Category")
+
+
+```
+ 
+ 
+ 
+```{r}
+##############################
+#                            #
+##        Naive Bayes       ##
+###      Model Fitting     ###
+##                          ##
+##############################
+
+fritoLay <- ddsBinded[,c("Attrition",
+                         "Department",
+                         "JobInvolvement",
+                         "JobLevel",
+                         "JobRole",
+                         "JobSatisfaction",
+                         "MaritalStatus",
+                         "OverTime",
+                         "StockOptionLevel",
+                         "WorkLifeBalance",
+                         "Age",
+                         "MonthlyIncome",
+                         "NumCompaniesWorked",
+                         "TotalWorkingYears",
+                         "YearsAtCompany",
+                         "YearsInCurrentRole",
+                         "YearsWithCurrManager")]
+
+iterations = 200
+
+masterAcc = matrix(nrow = iterations)
+masterSen <- matrix(nrow = iterations)
+masterSpec <- matrix(nrow = iterations)
+
+splitPerc = .7 #Training / Test split Percentage
+
+for(j in 1:iterations)
+{ trainInd = createDataPartition(fritoLay$Attrition, p = splitPerc, list = FALSE)
+  train = fritoLay[trainInd,]
+  test = fritoLay[-trainInd,]
+  model = naiveBayes(train[,-1], train[,1], laplace = 0)
+  table(predict(model,test[,-1]), test[,1])
+  CM = confusionMatrix(table(predict(model,test[,-1]),test[,1]))
+  masterAcc[j]  <-  CM$overall[1]
+  masterSen[j]  <-  CM$byClass[1]
+  masterSpec[j] <-  CM$byClass[2]
+}
+
+MeanAcc   <-  colMeans(masterAcc)
+MeanSen   <-  colMeans(masterSen)
+MeanSpec  <-  colMeans(masterSpec)
+MeanAcc
+MeanSen
+MeanSpec
+CM
+
+#### BOOOM WE are in the money! ###
+# Accuracy : 0.8352          
+#                 95% CI : (0.7846, 0.8781)
+#    No Information Rate : 0.8391          
+#    P-Value [Acc > NIR] : 0.6066          
+#                                          
+#                  Kappa : 0.4483          
+#                                         
+# Mcnemar's Test P-Value : 0.1273          
+#                                         
+#            Sensitivity : 0.8767          
+#            Specificity : 0.6190          
+#         Pos Pred Value : 0.9231          
+#         Neg Pred Value : 0.4906          
+#             Prevalence : 0.8391          
+#         Detection Rate : 0.7356          
+#   Detection Prevalence : 0.7969          
+#      Balanced Accuracy : 0.7479   
+#
+
+```
+
+
+
+```{r}
+##############################
+##                          ##
+## Prepare the Competition  ##
+##     Set of Data for      ##    
+##         Attrition        ##
+##                          ##
+##############################
+compSet <- read.csv("CaseStudy2CompSet No Attrition.csv")
+str(compSet)
+#view(names(compSet))
+
+sapply(compSet, function(x) sum(is.na(x)))
+# Confirmed no NA's in the data
+
+# Categorical Variable Manipulation
+comp_cat <- compSet[,c(3,5,7,8,11,12,14:18,23,25,26,28,30,31)]
+str(comp_cat)
+# let's turn all the variables into factors
+comp_cat <- comp_cat %>% dplyr::mutate_if(is.character, as.factor)
+comp_cat <- comp_cat %>% dplyr::mutate_if(is.integer, as.factor)
+str(comp_cat)
+
+# Numerical Variable Manupulation
+comp_num <- compSet[,c(2,4,6,13,19,20,21,24,29,32:35)]
+#view(names(comp_num))
+str(comp_num)
+comp_num[,c(1:13)] <- sapply(comp_num[,c(1:13)], as.numeric)
+str(comp_num)
+
+# Recombine the variable sets
+compSetFormatted <- cbind(comp_cat, comp_num)
+str(compSetFormatted)
+names(compSetFormatted)
+
+# Reduce the Competition Set to the appropriate variables
+compSetFinal <- compSetFormatted[,c("Department",
+                                    "JobInvolvement",
+                                    "JobLevel",
+                                    "JobRole",
+                                    "JobSatisfaction",
+                                    "MaritalStatus",
+                                    "OverTime",
+                                    "StockOptionLevel",
+                                    "WorkLifeBalance",
+                                    "Age",
+                                    "MonthlyIncome",
+                                    "NumCompaniesWorked",
+                                    "TotalWorkingYears",
+                                    "YearsAtCompany",
+                                    "YearsInCurrentRole",
+                                    "YearsWithCurrManager")]
+
+str(compSetFinal)
+```
+
+
+
+```{r}
+
+##########################################
+###                                    ###
+### Run the Model to Predict Attrition ###
+###                                    ###
+##########################################
+
+PredictAtt <- as.data.frame(predict(model, compSetFinal))
+PredictAtt <- cbind(compSet$ID, PredictAtt)
+colnames(PredictAtt) <- c("Model", "Attrition")
+head(PredictAtt)
+#write.csv(PredictAtt, "Case2PredictionsEhly Attrition.csv")
+
+
+```
+
+
+
+```{r}
+##############################################
+##                                          ##
+##    Boruta for Monthly Incomes (Salary)   ##
+##                                          ##
+##############################################
+
+MonInc <- cbind(dds$ID, ddsDF_num, ddsDF_cat)
+str(MonInc)
+names(MonInc)[1] <- "ID"
+names(MonInc)
+MonInc <- MonInc[,-2]
+MonInc$ID <- as.numeric(MonInc$ID)
+
+boruta_moninc <- Boruta(MonthlyIncome~., data=MonInc, doTrace=2) # Boruta search
+
+boruta_sigMonInc <- names(boruta_moninc$finalDecision[boruta_moninc$finalDecision %in% c("Confirmed", "Tentative")]) #collect Confirmed and Tentative variables
+
+print(boruta_sigMonInc) #view sig var
+
+plot(boruta_moninc, cex.axis=.7, las=2, xlab="", main="Variable Importance to Monthly Income (Boruta Method)") #plot results
+
+# Most Important Variables
+# [1] "Age"                     "NumCompaniesWorked"      "TotalWorkingYears"       "YearsAtCompany"         
+# [5] "YearsInCurrentRole"      "YearsSinceLastPromotion" "YearsWithCurrManager"    "Attrition"              
+# [9] "BusinessTravel"          "Department"              "Education"               "JobLevel"               
+# [13] "JobRole"    
+
+
+```
+
+
+
+```{r}
+##############################################
+##                                          ##
+### Build Model to Estimate Monthly Income ###
+##                                          ##
+##############################################
+
+# Build a new DF for estimating monthly inc
+
+Monthlylm <- MonInc[,c("MonthlyIncome", "TotalWorkingYears", "Education", "JobLevel", "JobRole")]
+
+# Create aliases for categorical variables
+Monthlylm <- Monthlylm %>%
+  mutate(
+  ### Education ###
+    Educ1_2 = case_when(Monthlylm$Education == 1 ~ 1, 
+                        Monthlylm$Education == 2 ~ 1, TRUE ~ 0),
+    Educ3_4 = case_when(Monthlylm$Education == 3 ~ 1, 
+                        Monthlylm$Education == 4 ~ 1, TRUE ~ 0),
+    # Educ5 is the reference
+  ### JobLevel ###
+    JobLev1 = case_when(Monthlylm$JobLevel == 1 ~ 1, TRUE ~ 0),
+    JobLev2 = case_when(Monthlylm$JobLevel == 2 ~ 1, TRUE ~ 0),
+    JobLev3 = case_when(Monthlylm$JobLevel == 3 ~ 1, TRUE ~ 0),
+    JobLev4 = case_when(Monthlylm$JobLevel == 4 ~ 1, TRUE ~ 0),
+    #JobLev5 is the reference
+  ### JobRole ###
+    JobRolSalExec = case_when(Monthlylm$JobRole == "Sales Exec" ~ 1, TRUE ~ 0),
+    JobRolSalRep  = case_when(Monthlylm$JobRole == "Sales Rep" ~ 1, TRUE ~ 0),
+    JobRolResDir  = case_when(Monthlylm$JobRole == "Res. Director" ~ 1, TRUE ~ 0),
+    JobRolResSci  = case_when(Monthlylm$JobRole == "Res. Scientist" ~ 1, TRUE ~ 0),
+    JobRolHR      = case_when(Monthlylm$JobRole == "HR" ~ 1, TRUE ~ 0),
+    JobRolMgr     = case_when(Monthlylm$JobRole == "Manager" ~ 1, TRUE ~ 0),
+    JobRolLabTech = case_when(Monthlylm$JobRole == "Lab Tech" ~1, TRUE ~ 0)
+    # Reference: Healthcare Rep, Manufacturing Director
+  )
+
+Monthlylm <- Monthlylm[,-c(3:5)] #"Education", "JobLevel", "JobRole"
+#str(Monthlylm)
+
+### Let's start with lm ###
+lmMonthlyInc <- lm(MonthlyIncome ~ .,
+             data = Monthlylm)
+summary(lmMonthlyInc)
+RSS <- c(crossprod(lmMonthlyInc$residuals))
+MSE <- RSS/length(lmMonthlyInc$residuals)
+RMSE <- sqrt(MSE) #RSS   # 844,567,449 #MSE   # 970,767.2
+RMSE  # 985.26
+car::vif(lmMonthlyInc)
+
+
+########### Cross Validation #########
+iterations = 100
+
+RMSEmatrix = numeric(iterations)
+RSqmatrix = numeric(iterations)
+
+for(j in 1:iterations){
+trainInd = createDataPartition(Monthlylm$MonthlyIncome, p = 0.70, list = FALSE)
+  train = Monthlylm[trainInd,]
+  test = Monthlylm[-trainInd,]
+
+fit <- lm(MonthlyIncome ~ ., data = train)
+summary(fit)
+RSS <- c(crossprod(fit$residuals))
+MSE <- RSS/length(fit$residuals)
+RMSE <- sqrt(MSE)
+preds <- predict(fit, newdata=test)
+test$preds <- preds
+MSPE <- data.frame(Observed = test$MonthlyIncome, Predicted = preds)
+RMSEmatrix[j] = RMSE  
+RSqmatrix[j] = summary(fit)$r.squared
+}
+
+min(RMSEmatrix)
+mean(RMSEmatrix)
+max(RMSEmatrix)
+
+min(RSqmatrix)
+mean(RSqmatrix)
+max(RSqmatrix)
+
+# Review Test Results
+df <- cbind(test$MonthlyIncome, test$preds)
+df <- as.data.frame(df)
+df$residuals <- df$V1 - df$V2
+df$SqRes <- df$residuals^2
+df$SqRtRes <- sqrt(df$SqRes)
+df$perc <- df$V2/df$V1
+mean(df$perc) * 100
+#write.csv(summary(fit)$coefficients[,1], "newLMmodel.csv")
+#view(df)
+# Everything looks good...going to go for it!
+```
+
+```{r}
+
+#######################################
+##                                   ##
+##### Prepare the Competition Set #####
+##                                   ##
+#######################################
+
+IncomeCompSet <- read.csv("CaseStudy2CompSet No Salary.csv")
+#view(names(IncomeCompSet))
+
+# reduce competition set to just the core variables needed
+Comp <- IncomeCompSet[,c("TotalWorkingYears", "Education", "JobLevel", "JobRole")]
+
+# Create some variables for prediction
+
+Comp <-  Comp %>%
+  mutate(
+  ### Education ###
+    Educ1_2 = case_when(Comp$Education == 1 ~ 1, 
+                        Comp$Education == 2 ~ 1, TRUE ~ 0),
+    Educ3_4 = case_when(Comp$Education == 3 ~ 1, 
+                        Comp$Education == 4 ~ 1, TRUE ~ 0),
+    # Education 5 is the Reference
+  ### JobLevel ###
+    JobLev1 = case_when(Comp$JobLevel == 1 ~ 1, TRUE ~ 0),
+    JobLev2 = case_when(Comp$JobLevel == 2 ~ 1, TRUE ~ 0),
+    JobLev3 = case_when(Comp$JobLevel == 3 ~ 1, TRUE ~ 0),
+    JobLev4 = case_when(Comp$JobLevel == 4 ~ 1, TRUE ~ 0),
+    # Reference: JobLev5 
+  ### JobRole ###
+    JobRolSalExec = case_when(Comp$JobRole == "Sales Exec" ~ 1, TRUE ~ 0),
+    JobRolSalRep  = case_when(Comp$JobRole == "Sales Rep" ~ 1, TRUE ~ 0),
+    JobRolResDir  = case_when(Comp$JobRole == "Res. Director" ~ 1, TRUE ~ 0),
+    JobRolResSci  = case_when(Comp$JobRole == "Res. Scientist" ~ 1, TRUE ~ 0),
+    JobRolHR      = case_when(Comp$JobRole == "HR" ~ 1, TRUE ~ 0),
+    JobRolMgr     = case_when(Comp$JobRole == "Manager" ~ 1, TRUE ~ 0),
+    JobRolLabTech = case_when(Comp$JobRole == "Lab Tech" ~1, TRUE ~ 0)
+    # Reference: Healthcare Rep, Manufacturing Director
+)
+
+Comp <- Comp[,-c(2:4)] # Remove "Education", "JobLevel", "JobRole" 
+Comp <- Comp %>% dplyr::mutate_if(is.integer, as.numeric)
+```
+
+
+```{r}
+############################
+##                        ##
+###  Run the Prediction  ###
+##                        ##
+############################
+
+fit <- lm(MonthlyIncome ~ ., data = Monthlylm)
+summary(fit)
+RSS <- c(crossprod(fit$residuals))
+MSE <- RSS/length(fit$residuals)
+RMSE <- sqrt(MSE)
+RMSE
+preds <- predict(fit, newdata = Comp)
+preds <- as.data.frame(preds)
+names(preds)[1] <- "MonthlyIncome"
+head(preds)
+PredEhly <- cbind(IncomeCompSet$ID, preds)
+names(PredEhly)[1] <- "ID"
+str(PredEhly)
+head(PredEhly)
+#write.csv(PredEhly, "Case2PredictionsEHLY Salary.csv")
+
+```
